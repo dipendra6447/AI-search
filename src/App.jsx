@@ -83,13 +83,13 @@ function App() {
   // Close modal on Escape key press
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && showNewSessionModal) {
+      if (e.key === 'Escape') {
         setShowNewSessionModal(false)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [showNewSessionModal])
+  }, [])
 
   // Skip animation to display full answer immediately
   const skipTyping = () => {
@@ -103,7 +103,7 @@ function App() {
     }
   }
 
-  // Request to start a new session (shows HTML modal if messages exist)
+  // Request to start a new session
   const requestNewSession = () => {
     if (messages.length === 0) {
       setQuestion('')
@@ -130,7 +130,7 @@ function App() {
     }
   }
 
-  // Submit search query
+  // Submit search query and automatically fetch answer
   const askQuestion = async (queryText) => {
     const trimmedQuestion = (typeof queryText === 'string' ? queryText : question).trim()
     if (!trimmedQuestion || showLoader || isTyping) return
@@ -264,7 +264,7 @@ function App() {
               <svg className='w-4 h-4' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
                 <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='2' d='M12 4v16m8-8H4' />
               </svg>
-              <span>New Session</span>
+              <span>+ New Session</span>
             </button>
 
             {/* Session Searches History */}
@@ -490,7 +490,7 @@ function App() {
           </footer>
         </div>
 
-        {/* Custom HTML Confirmation Popup Modal */}
+        {/* Custom HTML Confirmation Popup Modal for New Session */}
         {showNewSessionModal && (
           <div
             className='fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs'
@@ -503,14 +503,12 @@ function App() {
               className='bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl text-center transform transition-all'
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Modal Icon Badge */}
               <div className='w-12 h-12 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center mx-auto mb-4 shadow-inner'>
                 <svg className='w-6 h-6' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
                   <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='2' d='M12 4v16m8-8H4' />
                 </svg>
               </div>
 
-              {/* Title & Description */}
               <h3 id='new-session-title' className='text-lg font-bold text-white mb-2'>
                 Start a New Session?
               </h3>
@@ -518,7 +516,6 @@ function App() {
                 This will clear your current conversation history and contextual search memory.
               </p>
 
-              {/* Action Buttons */}
               <div className='flex items-center gap-3'>
                 <button
                   type='button'
