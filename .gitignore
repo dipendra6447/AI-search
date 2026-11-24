@@ -1,3 +1,7 @@
+# Next.js
+.next/
+out/
+
 # Logs
 logs
 *.log
@@ -26,3 +30,4 @@ dist-ssr
 # Environment
 .env
 .env.production
+.env*.local

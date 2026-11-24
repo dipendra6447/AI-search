@@ -1,12 +1,12 @@
 import { useState } from 'react'
-import { parseMarkdownBlocks } from '../Helper'
+import { parseMarkdownBlocks } from '../lib/Helper'
 
 function CodeCard({ code, lang }) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
     try {
-      if (navigator.clipboard && window.isSecureContext) {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(code)
       } else {
         const textArea = document.createElement('textarea')

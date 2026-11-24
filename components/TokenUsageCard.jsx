@@ -67,7 +67,6 @@ export default function TokenUsageCard({ tokenStats, onResetStats }) {
 
   // Groq Free Tier TPM limit is 8,000 tokens/minute
   const GROQ_TPM_LIMIT = 8000
-  const minuteProgress = Math.min(100, Math.round((lastTokens / GROQ_TPM_LIMIT) * 100))
 
   return (
     <div className='my-3 p-3 rounded-2xl bg-zinc-800/80 border border-zinc-700/70 shadow-lg text-left backdrop-blur-sm'>
