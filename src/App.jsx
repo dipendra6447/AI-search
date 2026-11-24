@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
-import { API_URL } from './constants'
+import { GROQ_API_KEY, GROQ_ENDPOINT, GROQ_MODEL } from './constants'
 import Answers from './components/Answers'
+import TokenUsageCard from './components/TokenUsageCard'
 
 const SESSION_STORAGE_KEY = 'ai_search_session_messages'
+const TOKEN_STORAGE_KEY = 'ai_search_token_usage'
 
 function App() {
   const [question, setQuestion] = useState('')
@@ -24,8 +26,80 @@ function App() {
   const [streamingAnswer, setStreamingAnswer] = useState(null)
   const [isTyping, setIsTyping] = useState(false)
   const [showLoader, setShowLoader] = useState(false)
+  const [loaderText, setLoaderText] = useState('Thinking...')
   const [error, setError] = useState('')
   const messagesEndRef = useRef(null)
+
+  // Track session token statistics
+  const [tokenStats, setTokenStats] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem(TOKEN_STORAGE_KEY)
+      return saved
+        ? JSON.parse(saved)
+        : {
+            totalTokens: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            lastTokens: 0,
+            lastPromptTokens: 0,
+            lastCompletionTokens: 0,
+            queryCount: 0
+          }
+    } catch {
+      return {
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        lastTokens: 0,
+        lastPromptTokens: 0,
+        lastCompletionTokens: 0,
+        queryCount: 0
+      }
+    }
+  })
+
+  // Persist token usage to sessionStorage
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokenStats))
+    } catch (e) {
+      console.error('Failed to save token stats:', e)
+    }
+  }, [tokenStats])
+
+  // Record tokens from Groq API response
+  const recordTokenUsage = (usage) => {
+    if (!usage) return
+    const { prompt_tokens = 0, completion_tokens = 0, total_tokens = 0 } = usage
+    setTokenStats((prev) => ({
+      totalTokens: (prev?.totalTokens || 0) + total_tokens,
+      promptTokens: (prev?.promptTokens || 0) + prompt_tokens,
+      completionTokens: (prev?.completionTokens || 0) + completion_tokens,
+      lastTokens: total_tokens,
+      lastPromptTokens: prompt_tokens,
+      lastCompletionTokens: completion_tokens,
+      queryCount: (prev?.queryCount || 0) + 1
+    }))
+  }
+
+  // Clear/reset token statistics
+  const resetTokenStats = () => {
+    const cleanStats = {
+      totalTokens: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      lastTokens: 0,
+      lastPromptTokens: 0,
+      lastCompletionTokens: 0,
+      queryCount: 0
+    }
+    setTokenStats(cleanStats)
+    try {
+      sessionStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(cleanStats))
+    } catch (e) {
+      console.error('Failed to clear token stats:', e)
+    }
+  }
 
   // Persist messages to sessionStorage
   useEffect(() => {
@@ -36,7 +110,7 @@ function App() {
     }
   }, [messages])
 
-  // Word-by-word typewriter streaming effect
+  // Word-by-word typewriter streaming effect for text answers
   useEffect(() => {
     if (!streamingAnswer?.fullText) return
 
@@ -53,7 +127,7 @@ function App() {
       if (currentIndex >= tokens.length) {
         setMessages((prev) => [
           ...prev,
-          { id: streamingAnswer.id, role: 'model', text: fullText }
+          { id: streamingAnswer.id, role: 'assistant', text: fullText }
         ])
         setStreamingAnswer(null)
         setIsTyping(false)
@@ -96,7 +170,7 @@ function App() {
     if (isTyping && streamingAnswer) {
       setMessages((prev) => [
         ...prev,
-        { id: streamingAnswer.id, role: 'model', text: streamingAnswer.fullText }
+        { id: streamingAnswer.id, role: 'assistant', text: streamingAnswer.fullText }
       ])
       setStreamingAnswer(null)
       setIsTyping(false)
@@ -123,6 +197,7 @@ function App() {
     setQuestion('')
     setSidebarOpen(false)
     setShowNewSessionModal(false)
+    resetTokenStats()
     try {
       sessionStorage.removeItem(SESSION_STORAGE_KEY)
     } catch (e) {
@@ -130,7 +205,7 @@ function App() {
     }
   }
 
-  // Submit search query and automatically fetch answer
+  // Submit query: handles Text Search via GroqCloud LPU
   const askQuestion = async (queryText) => {
     const trimmedQuestion = (typeof queryText === 'string' ? queryText : question).trim()
     if (!trimmedQuestion || showLoader || isTyping) return
@@ -142,39 +217,40 @@ function App() {
 
     // Append user message
     const userMsgId = Date.now()
-    const newUserMsg = { id: userMsgId, role: 'user', text: trimmedQuestion }
+    const newUserMsg = {
+      id: userMsgId,
+      role: 'user',
+      text: trimmedQuestion
+    }
     const updatedMessages = [...messages, newUserMsg]
     setMessages(updatedMessages)
 
-    // Build alternating conversational history for Gemini API
-    const contentsHistory = []
-    for (const msg of updatedMessages) {
-      if (!msg.text || !msg.text.trim()) continue
-      const role = msg.role === 'user' ? 'user' : 'model'
+    setLoaderText('Thinking on Groq LPU...')
 
-      if (contentsHistory.length > 0 && contentsHistory[contentsHistory.length - 1].role === role) {
-        contentsHistory[contentsHistory.length - 1].parts[0].text += '\n\n' + msg.text.trim()
-      } else {
-        contentsHistory.push({
-          role: role,
-          parts: [{ text: msg.text.trim() }]
-        })
-      }
-    }
-
-    while (contentsHistory.length > 0 && contentsHistory[0].role !== 'user') {
-      contentsHistory.shift()
-    }
+    // Build chat message history for GroqCloud API
+    const chatMessages = [
+      {
+        role: 'system',
+        content:
+          'You are an intelligent, ultra-fast AI assistant powered by GroqCloud. Provide clear, accurate, and well-structured answers using Markdown headings, bullet points, and code blocks where applicable.'
+      },
+      ...updatedMessages.map((msg) => ({
+        role: msg.role === 'model' || msg.role === 'assistant' ? 'assistant' : 'user',
+        content: msg.text
+      }))
+    ]
 
     const payload = {
-      contents: contentsHistory
+      model: GROQ_MODEL,
+      messages: chatMessages
     }
 
     try {
-      const response = await fetch(API_URL, {
+      const response = await fetch(GROQ_ENDPOINT, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${GROQ_API_KEY}`
         },
         body: JSON.stringify(payload)
       })
@@ -185,7 +261,11 @@ function App() {
         throw new Error(data?.error?.message || `Request failed with status ${response.status}`)
       }
 
-      const answerText = data?.candidates?.[0]?.content?.parts?.[0]?.text
+      if (data?.usage) {
+        recordTokenUsage(data.usage)
+      }
+
+      const answerText = data?.choices?.[0]?.message?.content
       if (!answerText) {
         throw new Error('No answer received from the AI model.')
       }
@@ -224,7 +304,7 @@ function App() {
           />
         )}
 
-        {/* Responsive Sidebar (Slide-over on mobile, static on desktop) */}
+        {/* Responsive Sidebar */}
         <aside
           className={`fixed md:static inset-y-0 left-0 z-50 w-72 sm:w-80 md:w-64 lg:w-72 bg-zinc-900 border-r border-zinc-800/80 p-4 sm:p-5 flex flex-col justify-between shrink-0 shadow-2xl md:shadow-none transition-transform duration-300 ease-in-out ${
             sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
@@ -235,7 +315,7 @@ function App() {
             <div className='mb-4'>
               <div className='flex items-center justify-between mb-1'>
                 <h1 className='text-lg font-bold text-white flex items-center gap-2'>
-                  <span className='text-blue-400'>✦</span> AI Search
+                  <span className='text-orange-500'>✦</span> AI Search
                 </h1>
                 {/* Mobile Drawer Close Button */}
                 <button
@@ -249,9 +329,9 @@ function App() {
                 </button>
               </div>
               <div className='flex items-center justify-between text-[11px] text-zinc-400'>
-                <span>Contextual Multi-Turn</span>
-                <span className='px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px]'>
-                  Live Session
+                <span>Ultra-Fast LPU Inference</span>
+                <span className='px-1.5 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20 text-[10px] font-medium'>
+                  GroqCloud
                 </span>
               </div>
             </div>
@@ -275,7 +355,7 @@ function App() {
 
               {userSearches.length === 0 ? (
                 <div className='text-xs text-zinc-400 italic py-6 text-center'>
-                  No searches in this session yet.
+                  No activity in this session yet.
                 </div>
               ) : (
                 <ul className='space-y-1.5'>
@@ -287,6 +367,7 @@ function App() {
                         title={msg.text}
                       >
                         <span className='text-zinc-500 text-[10px] min-w-3'>{idx + 1}.</span>
+                        <span className='text-zinc-400 text-xs mr-1'>💬</span>
                         <span className='truncate'>{msg.text}</span>
                       </button>
                     </li>
@@ -294,11 +375,16 @@ function App() {
                 </ul>
               )}
             </div>
+
+            {/* Token Usage & Refresh Date Card on the Left Side */}
+            <div className='shrink-0 pt-2'>
+              <TokenUsageCard tokenStats={tokenStats} onResetStats={resetTokenStats} />
+            </div>
           </div>
 
           {/* Sidebar Footer */}
           <div className='pt-3 border-t border-zinc-800/80 flex items-center justify-between text-[11px] text-zinc-400'>
-            <span>Gemini 2.5 Flash</span>
+            <span className='truncate font-medium text-zinc-300'>Groq 120B</span>
             {messages.length > 0 && (
               <button
                 onClick={requestNewSession}
@@ -311,7 +397,7 @@ function App() {
           </div>
         </aside>
 
-        {/* Main Chat/Search Area */}
+        {/* Main Content Area */}
         <div className='flex-1 flex flex-col h-full overflow-hidden bg-zinc-900/30 relative'>
           {/* Mobile App Navigation Header */}
           <header className='md:hidden flex items-center justify-between px-3.5 py-2.5 bg-zinc-900/95 border-b border-zinc-800/80 backdrop-blur-md shrink-0 z-30'>
@@ -326,7 +412,8 @@ function App() {
             </button>
 
             <div className='flex items-center gap-1.5 font-bold text-white text-base'>
-              <span className='text-blue-400'>✦</span> AI Search
+              <span className='text-orange-500'>✦</span>
+              <span>AI Search</span>
             </div>
 
             <button
@@ -346,37 +433,38 @@ function App() {
             <div className='max-w-3xl mx-auto w-full'>
               {/* Empty State */}
               {messages.length === 0 && !showLoader && (
-                <div className='text-center text-zinc-500 mt-12 sm:mt-20 px-2'>
-                  <div className='text-4xl sm:text-5xl mb-3 sm:mb-4'>🔍</div>
+                <div className='text-center text-zinc-500 mt-8 sm:mt-12 px-2'>
+                  <div className='text-4xl sm:text-5xl mb-3'>⚡</div>
                   <h2 className='text-xl sm:text-2xl font-semibold text-zinc-200 mb-2'>
-                    AI Search
+                    GroqCloud Fast AI Search
                   </h2>
-                  <p className='text-xs sm:text-sm text-zinc-400 mb-6 sm:mb-8 max-w-md mx-auto leading-relaxed'>
-                    Search questions, generate code, or explore topics. Previous results are stored in your session!
+                  <p className='text-xs sm:text-sm text-zinc-400 mb-6 max-w-md mx-auto leading-relaxed'>
+                    Powered by GroqCloud LPU (openai/gpt-oss-120b). Lightning-fast answers, code generation, and session memory.
                   </p>
 
+                  {/* Suggestion Cards */}
                   <div className='grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 max-w-lg mx-auto text-left'>
                     <button
                       onClick={() => askQuestion('Write a Python function for binary search with comments')}
-                      className='p-3 rounded-xl bg-zinc-800/60 hover:bg-zinc-800 active:bg-zinc-700/80 border border-zinc-700/60 hover:border-blue-500/50 text-xs text-zinc-300 hover:text-white transition-all cursor-pointer'
+                      className='p-3 rounded-xl bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700/60 hover:border-orange-500/50 text-xs text-zinc-300 hover:text-white transition-all cursor-pointer'
                     >
                       💻 Python binary search function
                     </button>
                     <button
                       onClick={() => askQuestion('Explain how useState and useEffect work in React')}
-                      className='p-3 rounded-xl bg-zinc-800/60 hover:bg-zinc-800 active:bg-zinc-700/80 border border-zinc-700/60 hover:border-blue-500/50 text-xs text-zinc-300 hover:text-white transition-all cursor-pointer'
+                      className='p-3 rounded-xl bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700/60 hover:border-orange-500/50 text-xs text-zinc-300 hover:text-white transition-all cursor-pointer'
                     >
                       ⚛️ Explain useState vs useEffect in React
                     </button>
                     <button
                       onClick={() => askQuestion('What are the key differences between SQL and NoSQL databases?')}
-                      className='p-3 rounded-xl bg-zinc-800/60 hover:bg-zinc-800 active:bg-zinc-700/80 border border-zinc-700/60 hover:border-blue-500/50 text-xs text-zinc-300 hover:text-white transition-all cursor-pointer'
+                      className='p-3 rounded-xl bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700/60 hover:border-orange-500/50 text-xs text-zinc-300 hover:text-white transition-all cursor-pointer'
                     >
                       🗄️ SQL vs NoSQL database comparison
                     </button>
                     <button
                       onClick={() => askQuestion('Give me 5 practical tips to optimize web performance')}
-                      className='p-3 rounded-xl bg-zinc-800/60 hover:bg-zinc-800 active:bg-zinc-700/80 border border-zinc-700/60 hover:border-blue-500/50 text-xs text-zinc-300 hover:text-white transition-all cursor-pointer'
+                      className='p-3 rounded-xl bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700/60 hover:border-orange-500/50 text-xs text-zinc-300 hover:text-white transition-all cursor-pointer'
                     >
                       ⚡ 5 tips to optimize web performance
                     </button>
@@ -393,7 +481,7 @@ function App() {
                       id={`msg-${msg.id}`}
                       className='flex items-start gap-2.5 sm:gap-3 my-3 sm:my-4 p-3.5 sm:p-4 rounded-2xl bg-zinc-800/70 border border-zinc-700/60 shadow-md max-w-full'
                     >
-                      <div className='w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-blue-600/30 text-blue-400 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5'>
+                      <div className='w-6 h-6 sm:w-7 sm:h-7 rounded-lg font-bold text-xs flex items-center justify-center shrink-0 mt-0.5 bg-orange-500/30 text-orange-400'>
                         Q
                       </div>
                       <div className='text-white font-medium text-sm sm:text-base pt-0.5 leading-relaxed break-words flex-1'>
@@ -403,7 +491,7 @@ function App() {
                   )
                 }
 
-                // AI Response
+                // AI Text Response
                 return (
                   <div
                     key={msg.id}
@@ -411,7 +499,7 @@ function App() {
                   >
                     <div className='flex items-center justify-between mb-3 pb-2.5 border-b border-zinc-800 text-xs text-zinc-400'>
                       <div className='flex items-center gap-1.5 font-semibold text-zinc-300 text-xs sm:text-sm'>
-                        <span className='text-blue-400'>✦</span> AI Response
+                        <span className='text-orange-400'>✦</span> Groq Response
                       </div>
                     </div>
                     <Answers content={msg.text} />
@@ -419,12 +507,12 @@ function App() {
                 )
               })}
 
-              {/* Word-by-word streaming response */}
+              {/* Word-by-word streaming text response */}
               {streamingAnswer && (
-                <div className='p-4 sm:p-6 rounded-2xl bg-zinc-900/90 border border-blue-500/30 shadow-2xl my-3 sm:my-4 max-w-full overflow-hidden'>
+                <div className='p-4 sm:p-6 rounded-2xl bg-zinc-900/90 border border-orange-500/30 shadow-2xl my-3 sm:my-4 max-w-full overflow-hidden'>
                   <div className='flex items-center justify-between mb-3 pb-2.5 border-b border-zinc-800 text-xs text-zinc-400'>
                     <div className='flex items-center gap-1.5 font-semibold text-zinc-300 text-xs sm:text-sm'>
-                      <span className='text-blue-400'>✦</span> Generating response...
+                      <span className='text-orange-400'>✦</span> Generating response...
                     </div>
                     <button
                       onClick={skipTyping}
@@ -437,15 +525,13 @@ function App() {
                 </div>
               )}
 
-              {/* Thinking Loader */}
+              {/* Loader */}
               {showLoader && (
-                <div className='flex items-center gap-2 text-zinc-400 my-4 p-3.5 sm:p-4 rounded-xl bg-zinc-900/70 border border-zinc-800 animate-pulse'>
-                  <div className='w-2 h-2 bg-blue-400 rounded-full animate-bounce'></div>
-                  <div className='w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0.2s]'></div>
-                  <div className='w-2 h-2 bg-blue-400 rounded-full animate-bounce [animation-delay:0.4s]'></div>
-                  <span className='text-xs sm:text-sm text-zinc-400 ml-1'>
-                    Thinking with session context...
-                  </span>
+                <div className='flex items-center gap-3 my-4 p-4 rounded-xl border animate-pulse bg-zinc-900/70 border-zinc-800 text-zinc-400'>
+                  <div className='w-2.5 h-2.5 rounded-full animate-bounce bg-orange-400'></div>
+                  <div className='w-2.5 h-2.5 rounded-full animate-bounce [animation-delay:0.2s] bg-orange-400'></div>
+                  <div className='w-2.5 h-2.5 rounded-full animate-bounce [animation-delay:0.4s] bg-orange-400'></div>
+                  <span className='text-xs sm:text-sm font-medium ml-1'>{loaderText}</span>
                 </div>
               )}
 
@@ -460,23 +546,19 @@ function App() {
             </div>
           </div>
 
-          {/* Bottom Input Area */}
+          {/* Bottom Area: Input Bar */}
           <footer className='p-2 sm:p-4 bg-zinc-950/90 sm:bg-transparent backdrop-blur-md border-t border-zinc-800/60 sm:border-t-0 shrink-0'>
-            <div className='bg-zinc-800/95 w-full max-w-2xl mx-auto rounded-3xl sm:rounded-4xl border border-zinc-700/80 text-white flex items-center shadow-2xl focus-within:border-blue-500 transition-colors p-1 sm:p-1.5'>
+            <div className='bg-zinc-800/95 w-full max-w-2xl mx-auto rounded-3xl sm:rounded-4xl border border-zinc-700/80 focus-within:border-orange-500 text-white flex items-center shadow-2xl transition-colors p-1 sm:p-1.5'>
               <input
                 type='text'
-                placeholder={
-                  messages.length > 0
-                    ? 'Ask follow-up question...'
-                    : 'Ask me anything...'
-                }
+                placeholder={messages.length > 0 ? 'Ask follow-up question...' : 'Ask me anything or request code...'}
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !showLoader && !isTyping && askQuestion()}
                 className='flex-1 border-none outline-none bg-transparent text-sm sm:text-base px-3 sm:px-4 py-2 text-white placeholder:text-zinc-500 min-w-0'
               />
               <button
-                className='w-9 h-9 sm:w-auto sm:px-5 sm:py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-full sm:rounded-3xl cursor-pointer text-sm font-medium transition-colors shrink-0 flex items-center justify-center'
+                className='w-9 h-9 sm:w-auto sm:px-5 sm:py-2.5 disabled:opacity-40 disabled:cursor-not-allowed rounded-full sm:rounded-3xl cursor-pointer text-sm font-medium transition-colors shrink-0 flex items-center justify-center gap-1.5 text-white bg-orange-600 hover:bg-orange-500'
                 onClick={() => askQuestion()}
                 disabled={showLoader || isTyping || !question.trim()}
                 aria-label='Send query'
@@ -490,7 +572,7 @@ function App() {
           </footer>
         </div>
 
-        {/* Custom HTML Confirmation Popup Modal for New Session */}
+        {/* Custom Confirmation Popup Modal for New Session */}
         {showNewSessionModal && (
           <div
             className='fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs'
@@ -503,7 +585,7 @@ function App() {
               className='bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl text-center transform transition-all'
               onClick={(e) => e.stopPropagation()}
             >
-              <div className='w-12 h-12 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center mx-auto mb-4 shadow-inner'>
+              <div className='w-12 h-12 rounded-2xl bg-orange-500/10 border border-orange-500/20 text-orange-400 flex items-center justify-center mx-auto mb-4 shadow-inner'>
                 <svg className='w-6 h-6' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
                   <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='2' d='M12 4v16m8-8H4' />
                 </svg>
@@ -513,7 +595,7 @@ function App() {
                 Start a New Session?
               </h3>
               <p className='text-xs sm:text-sm text-zinc-400 mb-6 leading-relaxed'>
-                This will clear your current conversation history and contextual search memory.
+                This will clear your current conversation history and code.
               </p>
 
               <div className='flex items-center gap-3'>
@@ -527,7 +609,7 @@ function App() {
                 <button
                   type='button'
                   onClick={confirmNewSession}
-                  className='flex-1 py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs sm:text-sm font-medium transition-colors cursor-pointer shadow-lg shadow-blue-600/20'
+                  className='flex-1 py-2.5 px-4 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs sm:text-sm font-medium transition-colors cursor-pointer shadow-lg shadow-orange-600/20'
                 >
                   New Session
                 </button>
